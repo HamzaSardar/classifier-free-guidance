@@ -1,0 +1,61 @@
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/cfg/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "/docs",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cfg-diffuson"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[project]
+name = "cfg-diffusion"
+description = "Implementation of classifier-free guidance for diffusion models."
+
+requires-python = ">=3.12"
+readme = "README.md"
+license = { file = "LICENSE"}
+
+authors = [
+  { name = "Hamza Sardar", email = "hamzasardar360@gmail.com" },
+]
+
+keywords = ["pytorch", "diffusion-model", "classifier-free-guidance"]
+
+dynamic = ["version"]
+
+dependencies = [
+  "absl-py",
+  "torch",
+  "torchvision",
+  "einops",
+  "numpy",
+  "matplotlib",
+  "ml_collections @ git+https://github.com/danielkelshaw/ml_collections",
+]
+
+[project.optional-dependencies]
+
+jupyter = [
+  "ipykernel",
+  "jupyterlab",
+]
+
+[tool.pyright]
+include = ["src"]
+exclude = [
+  "src/models/*"
+]
+pythonVersion = "3.12"
+venvPath = "."
+venv = "venv"
+
+useLibraryCodeForTypes = true
+reportMissingImports = true
+~
