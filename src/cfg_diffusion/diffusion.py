@@ -105,6 +105,24 @@ class ContinuousReverseDiffusion(nn.Module):
                  lambda_max: int=15
              ) -> None:
 
+        """
+        Reverse diffusion using the continuous formulation, i.e.
+        generation from noise, conditional on log(SNR). A linear schedule is used for log(SNR).
+
+        Typical values for num_steps for generation: 64, 128, 256, 512.
+
+        Parameters:
+        -----------
+        denoise_model: Callable
+            Denoising UNet. 
+        num_steps: int
+            Number of inference steps to discretise the log(SNR) function to. 
+        lambda_min: int
+            Minimum log(SNR), given a default of -10.
+        lambda_max: int
+            Maximum log(SNR), given a default of 15.
+            
+        """
         super().__init__()
         self.denoise_model = denoise_model
         self.num_steps = num_steps
@@ -147,6 +165,18 @@ class ContinuousReverseDiffusion(nn.Module):
     
     @torch.no_grad()
     def forward(self, x: Tensor) -> list[Tensor]:
+        """Generate a high-resolution image from a low-resolution input.
+
+        Parameters:
+        -----------
+        x: Tensor
+            Input low-resolution image.
+
+        Returns:
+        --------
+        imgs: List[Tensor]
+            An array containing samples at each step in the reverse process.
+        """
         shape = x.shape
         img = torch.randn(shape).to(x.device)
         imgs = []
@@ -164,6 +194,23 @@ class ContinousDiffusion(nn.Module):
                  num_timesteps: int = 2000,
                  loss_fn=nn.L1Loss(reduction='mean')
                 ) -> None:
+        """Diffusion handler class for the continuous-time DDPM formulation, i.e. conditioning on log(SNR), for a super-resolution problem.
+        Assumes a linear profile between min(log(SNR)) and max(log(SNR)).
+        See `ContinuousReverseDiffusion` docs for typical values for num_timesteps and lambda limits.
+
+        Parameters:
+        -----------
+        denoise_model: Callable
+            Denoising UNet. 
+        lambda_min: int
+            Minimum log(SNR), given a default of -10.
+        lambda_max: int
+            Maximum log(SNR), given a default of 15.
+        num_steps: int
+            Number of inference steps to discretise the log(SNR) function to. 
+        loss_fn: nn.L1Loss | nn.MSELoss
+            Loss function to use for training. Both L1 and L2 are typical in DDPMs. 
+        """
         
         super().__init__()
         self.lambda_min = lambda_min

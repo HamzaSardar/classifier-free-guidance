@@ -4,15 +4,15 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from accelerate import Accelerator
 from absl import app, flags
-import wandb
-from wandb.sdk.lib.disabled import RunDisabled
-from wandb.sdk.wandb_run import Run
+import wandb # type: ignore
+from wandb.sdk.lib.disabled import RunDisabled # type: ignore
+from wandb.sdk.wandb_run import Run # type: ignore
 from src.cfg_diffusion.diffusion import ContinousDiffusion
 from src.cfg_diffusion.models.unet_periodic import UNet
 import src.cfg_diffusion.utils.flags as cfg_flags
 from ml_collections import config_flags
 
-from .configs.wandb import WANDB_CONFIG
+from .configs.wandb import WANDB_CONFIG # type: ignore
 
 
 FLAGS = flags.FLAGS
@@ -87,7 +87,6 @@ def main(_):
     config = FLAGS.config
 
     run = initialise_wandb()
-    print(run.group)
     
     print(config)
     train_ds = load_data(FLAGS.train_path)
@@ -106,7 +105,7 @@ def main(_):
         inner_channel=config.network.inner_channels,
         norm_groups=config.network.norm_groups,
         dropout=config.network.dropout_rate,
-        image_size=tuple(sample.shape[-2:])
+        image_size=tuple(sample.shape[-2:]) # type: ignore
     )
 
     diffusion = ContinousDiffusion(
@@ -115,7 +114,7 @@ def main(_):
         lambda_max=config.diffusion.lambda_max
     )
 
-    optim = torch.optim.Adam(diffusion.denoise_model.parameters(),
+    optim = torch.optim.Adam(diffusion.denoise_model.parameters(), # type: ignore
                              lr=config.training.learning_rate,
                              weight_decay=0.0001)
 
@@ -128,9 +127,6 @@ def main(_):
     iters = 0
 
     for epoch in range(n_epochs):
-        train_mse = 0.0
-        val_mse = 0.0
-
         for idx, zipped_data in enumerate(zip(train_loader, itertools.cycle(val_loader))):
             data, val_data = zipped_data
 
@@ -154,7 +150,7 @@ def main(_):
                 metrics_dict = {'epoch': epoch, 'iter': iters, 'train loss': loss, 'val loss': val_loss}
                 print(metrics_dict)
                 if isinstance(run, Run):
-                    run.log(metrics_dict)
+                    run.log(metrics_dict) # type: ignore
 
             iters += 1
             
@@ -163,7 +159,7 @@ def main(_):
 
     # finish
     if isinstance(run, Run):
-        run.finish()
+        run.finish() # type: ignore
 
     
 if __name__=='__main__':
