@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 from torch import Tensor
-import numpy as np
 from tqdm import tqdm
 from typing import Callable
 from functools import partial
+from torch.special import expm1
 
 
 class ContinuousForwardDiffusion(nn.Module):
@@ -105,16 +105,18 @@ class ContinuousReverseDiffusion(nn.Module):
                  lambda_max: int=15
              ) -> None:
 
+        super().__init__()
         self.denoise_model = denoise_model
         self.num_steps = num_steps
-        # _prev variables needed for mean and variance computation
+        
+        # _next variables needed for mean and variance computation
         self.lambdas = torch.linspace(lambda_min, lambda_max, num_steps)
-        self.lambas_prev = torch.cat((torch.tensor([lambda_min], device=self.lambas.device), self.lambas[:-1]), dim=0)
+        self.lambdas_next = torch.cat((self.lambdas[1:], torch.tensor([lambda_max], device=self.lambdas.device)), dim=0)
         self.alphas = torch.sqrt(1 / (1 + torch.exp(-self.lambdas)))
-        self.alphas_prev = torch.cat((torch.tensor([0], device=self.alphas.device), self.alphas[:-1]), dim=0)
+        self.alphas_next = torch.cat((self.alphas[1:], torch.tensor([0], device=self.lambdas.device)), dim=0)
         self.sigmas = 1 - self.alphas ** 2
-        self.sigmas_prev = torch.cat((torch.tensor([1], device=self.sigmas.device), self.sigmas[:-1]), dim=0)
-    
+        self.sigmas_next = torch.cat((self.sigmas[1:], torch.tensor([1], device=self.lambdas.device)), dim=0)
+
     @staticmethod
     def _predict_y0(y_noisy: Tensor, sigma_lambda: Tensor, alpha_lambda: Tensor, eps_hat: Tensor) -> Tensor:
         pred_y0 = (y_noisy - sigma_lambda*eps_hat)/alpha_lambda
@@ -122,28 +124,33 @@ class ContinuousReverseDiffusion(nn.Module):
     
     def reverse_mean_variance(self, t: int, x: Tensor, y_lambda: Tensor) -> tuple[Tensor, Tensor]:
 
-        eps_hat = self.denoise_model(torch.cat([x, y_lambda], dim=1), self.lambdas[t].view(-1, 1, 1, 1))
-        y_hat0 = self._predict_y0(y_lambda, self.sigmas[t], self.alphas[t], eps_hat)
+        eps_hat = self.denoise_model(torch.cat([x, y_lambda], dim=1), self.lambdas[t].view(-1, 1, 1, 1).to(x.device))
+        
+        y_hat0 = self._predict_y0(y_lambda, self.sigmas[t].sqrt(), self.alphas[t], eps_hat).clamp_(-1, 1)
         
         # Eq. 3 from classifier-free guidance paper
-        d_lambda = self.lambdas[t] - self.lambas_prev[t]
-        mean = (torch.exp(d_lambda)*(self.alphas_prev[t]/self.alphas[t])*y_lambda) + ((1 - torch.exp(d_lambda))*self.alphas_prev[t]*y_hat0)
-
-        variance = self.sigmas_prev[t] * (1 - torch.exp(d_lambda))
+        d_lambda = self.lambdas[t] - self.lambdas_next[t]
+        const = -expm1(d_lambda) # numerically stable operation of 1 - torch.exp(d_lambda)
         
+        mean = self.alphas_next[t] * (y_lambda * (1 - const) / self.alphas[t] + const * y_hat0)
+        variance = self.sigmas_next[t] * const
+
         return mean, variance
 
     def reverse_sample(self, t: int, x: Tensor, y_lambda: Tensor) -> Tensor:
         mean, variance = self.reverse_mean_variance(t, x, y_lambda)
         noise = torch.randn_like(y_lambda)
-        return mean + noise * torch.sqrt(variance)
+        if t != self.num_steps - 1:
+            return mean + noise*variance.sqrt()
+        else:
+            return mean
     
     @torch.no_grad()
     def forward(self, x: Tensor) -> list[Tensor]:
         shape = x.shape
         img = torch.randn(shape).to(x.device)
         imgs = []
-        for i in tqdm(reversed(range(0, self.num_timesteps))):
+        for i in tqdm((range(0, self.num_steps))):
             img = self.reverse_sample(i, x, img)
             imgs.append(img.detach().cpu())
         return imgs
@@ -152,8 +159,8 @@ class ContinuousReverseDiffusion(nn.Module):
 class ContinousDiffusion(nn.Module):
     def __init__(self,
                  denoise_model: Callable,
-                 lambda_min: int = -10, 
-                 lambda_max: int = 15,
+                 lambda_min: int = -20, 
+                 lambda_max: int = 20,
                  num_timesteps: int = 2000,
                  loss_fn=nn.L1Loss(reduction='mean')
                 ) -> None:
@@ -179,7 +186,7 @@ class ContinousDiffusion(nn.Module):
             x = self._neg_one_to_one(x)
         x_sr = self.reverse_process(x)
         
-        return self._one_to_zero(x_sr[-1])
+        return self._one_to_zero(x_sr[-2])
     
     def forward(self, x: Tensor, y: Tensor) -> Tensor:
         if torch.min(x) > 0 and torch.min(y) > 0:
@@ -191,5 +198,4 @@ class ContinousDiffusion(nn.Module):
         loss = self.loss_fn(eps, eps_hat)
         
         return loss
-
 

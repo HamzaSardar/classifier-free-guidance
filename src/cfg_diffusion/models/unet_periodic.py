@@ -69,7 +69,7 @@ class Upsample(nn.Module):
 
 class PeriodicUpsampler(nn.Module):
 
-    def __init__(self, scale_factor: int = 2, mode: str = 'nearest', npad: int = 16) -> None:
+    def __init__(self, scale_factor: int = 2, mode: str = 'nearest', npad: int = 2) -> None:
 
         super().__init__()
 

@@ -138,7 +138,6 @@ dmypy.json
 
 # exceptions
 *.ipynb
-src/experiments/
 pyrightconfig.json
 test_*
 

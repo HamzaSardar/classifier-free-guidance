@@ -1,7 +1,7 @@
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-path = "src/cfg/__init__.py"
+path = "src/cfg-diffusion/__init__.py"
 
 [tool.hatch.build.targets.sdist]
 exclude = [
