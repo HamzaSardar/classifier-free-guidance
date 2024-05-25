@@ -4,15 +4,21 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from accelerate import Accelerator
 from absl import app, flags
+import wandb
+from wandb.sdk.lib.disabled import RunDisabled
+from wandb.sdk.wandb_run import Run
 from src.cfg_diffusion.diffusion import ContinousDiffusion
 from src.cfg_diffusion.models.unet_periodic import UNet
 import src.cfg_diffusion.utils.flags as cfg_flags
 from ml_collections import config_flags
 
+from .configs.wandb import WANDB_CONFIG
+
 
 FLAGS = flags.FLAGS
 
 _CONFIG = config_flags.DEFINE_config_file('config')
+_WANDB_CONFIG = config_flags.DEFINE_config_dict('wandb', WANDB_CONFIG)
 
 _RESULTS_PATH = cfg_flags.DEFINE_path(
     'results_path',
@@ -52,16 +58,37 @@ def load_data(pt_path: Path) -> TensorDataset:
 
     return ds
 
+
 def get_dataloader(ds: TensorDataset, batch_size: int) -> DataLoader:
     dl = DataLoader(ds,batch_size=batch_size, pin_memory=True)
     return dl
 
+
+def initialise_wandb() -> Run | RunDisabled | None:
+
+    wandb_run = None
+    wandb_config = FLAGS.wandb.to_dict()
+
+    if wandb_config['group']:
+        wandb_config.update({'group': str(wandb_config['group'])})
+
+    if wandb_config['mode']:
+        wandb_run = wandb.init(config=FLAGS.config.to_dict(), **wandb_config)
+
+    return wandb_run
+
+
 def main(_):
 
     accelerator = Accelerator()
+
     FLAGS.results_path.mkdir(parents=True, exist_ok=True)
 
     config = FLAGS.config
+
+    run = initialise_wandb()
+    print(run.group)
+    
     print(config)
     train_ds = load_data(FLAGS.train_path)
     val_ds = load_data(FLAGS.val_path)
@@ -126,11 +153,17 @@ def main(_):
             if iters % FLAGS.logging_frequency == 0:
                 metrics_dict = {'epoch': epoch, 'iter': iters, 'train loss': loss, 'val loss': val_loss}
                 print(metrics_dict)
+                if isinstance(run, Run):
+                    run.log(metrics_dict)
 
             iters += 1
             
             if iters % FLAGS.saving_frequency == 0:
                 accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_64_128_{iters}.h5')
+
+    # finish
+    if isinstance(run, Run):
+        run.finish()
 
     
 if __name__=='__main__':
