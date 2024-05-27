@@ -140,4 +140,5 @@ dmypy.json
 *.ipynb
 pyrightconfig.json
 test_*
+wandb/*
 

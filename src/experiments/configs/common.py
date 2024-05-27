@@ -17,6 +17,7 @@ def get_config() -> ml_collections.ConfigDict:
     config.diffusion = ml_collections.ConfigDict()
     config.diffusion.lambda_min = -10
     config.diffusion.lambda_max = 15
+    config.diffusion.p_uncond = 0.
 
     # training parameters 
     config.training = ml_collections.ConfigDict()

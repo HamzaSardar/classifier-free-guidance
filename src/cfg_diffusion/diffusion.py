@@ -71,7 +71,7 @@ class ContinuousForwardDiffusion(nn.Module):
 
         return x_noisy, log_snr_sample, noise
 
-    def forward(self, x: Tensor, y0: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def forward(self, x: Tensor, y0: Tensor, p_uncond: float) -> tuple[Tensor, Tensor, Tensor]:
         """
         Compute the forward pass of a diffusion model.
 
@@ -81,6 +81,8 @@ class ContinuousForwardDiffusion(nn.Module):
             Input LR image.
         y: Tensor
             Input HR image.
+        p_uncond: float
+            Probability of unconditional training. Defaults to 0 in `ContinuousDiffusion` for no classifier-free guidance. Typical values are {0.1, 0.2}.
 
         Returns:
         --------
@@ -89,12 +91,19 @@ class ContinuousForwardDiffusion(nn.Module):
         """
         y_noisy, log_snr_sample, eps = self.noising(y0)
 
-        eps_hat = self.denoise_model(
-            torch.cat([x, y_noisy], dim=1), 
-            log_snr_sample.view(-1, 1, 1, 1)
-        )
-        
-        return y_noisy, eps_hat, eps
+        if torch.rand(1).item() > p_uncond:
+            eps_hat = self.denoise_model(
+                torch.cat([x, y_noisy], dim=1), 
+                log_snr_sample.view(-1, 1, 1, 1)
+            )
+            return y_noisy, eps_hat, eps
+        else:
+            x = torch.zeros_like(x, device=x.device)
+            eps_hat = self.denoise_model(
+                torch.cat([x, y_noisy], dim=1), 
+                log_snr_sample.view(-1, 1, 1, 1)
+            )
+            return y_noisy, eps_hat, eps
 
 
 class ContinuousReverseDiffusion(nn.Module):
@@ -102,7 +111,10 @@ class ContinuousReverseDiffusion(nn.Module):
                  denoise_model: Callable, 
                  num_steps: int=1000, 
                  lambda_min: int=-10, 
-                 lambda_max: int=15
+                 lambda_max: int=15,
+                 use_guidance: bool=True,
+                 *args,
+                 **kwargs
              ) -> None:
 
         """
@@ -121,11 +133,11 @@ class ContinuousReverseDiffusion(nn.Module):
             Minimum log(SNR), given a default of -10.
         lambda_max: int
             Maximum log(SNR), given a default of 15.
-            
         """
         super().__init__()
         self.denoise_model = denoise_model
         self.num_steps = num_steps
+        self.use_guidance=use_guidance
         
         # _next variables needed for mean and variance computation
         self.lambdas = torch.linspace(lambda_min, lambda_max, num_steps)
@@ -134,6 +146,16 @@ class ContinuousReverseDiffusion(nn.Module):
         self.alphas_next = torch.cat((self.alphas[1:], torch.tensor([0], device=self.lambdas.device)), dim=0)
         self.sigmas = 1 - self.alphas ** 2
         self.sigmas_next = torch.cat((self.sigmas[1:], torch.tensor([1], device=self.lambdas.device)), dim=0)
+
+        v = kwargs.get('sampler_noise_interpolation')
+        w = kwargs.get('guidance_strength')
+
+        if v and w:
+            self.v = v
+            self.w = w
+        else:
+            self.v = None
+            self.w = None
 
     @staticmethod
     def _predict_y0(y_noisy: Tensor, sigma_lambda: Tensor, alpha_lambda: Tensor, eps_hat: Tensor) -> Tensor:
@@ -162,6 +184,33 @@ class ContinuousReverseDiffusion(nn.Module):
             return mean + noise*variance.sqrt()
         else:
             return mean
+
+    def reverse_mean_variance_guided(self, t: int, x: Tensor, y_lambda: Tensor, v: float, w: float) -> tuple[Tensor, Tensor]:
+
+        eps_hat_cond = self.denoise_model(torch.cat([x, y_lambda], dim=1), self.lambdas[t].view(-1, 1, 1, 1).to(x.device))
+        eps_hat_uncond = self.denoise_model(torch.cat([torch.zeros_like(x, device=x.device), y_lambda], dim=1), self.lambdas[t].view(-1, 1, 1, 1).to(x.device))
+
+        eps_t = (1 + w)*eps_hat_cond - w*eps_hat_uncond
+        
+        y_hat0 = self._predict_y0(y_lambda, self.sigmas[t].sqrt(), self.alphas[t], eps_t).clamp_(-1, 1)
+        
+        # Eq. 3 from classifier-free guidance paper
+        d_lambda = self.lambdas[t] - self.lambdas_next[t]
+        const = -expm1(d_lambda) # numerically stable operation of 1 - torch.exp(d_lambda)
+        
+        mean = self.alphas_next[t] * (y_lambda * (1 - const) / self.alphas[t] + const * y_hat0)
+        variance = self.sigmas_next[t] * const
+        variance = (variance**(1-v))*((const*self.sigmas[t])**v)
+
+        return mean, variance
+
+    def reverse_sample_guided(self, t: int, x: Tensor, y_lambda: Tensor, v: float, w: float) -> Tensor:
+        mean, variance = self.reverse_mean_variance_guided(t, x, y_lambda, v=v, w=w)
+        noise = torch.randn_like(y_lambda)
+        if t != self.num_steps - 1:
+            return mean + noise*variance.sqrt()
+        else:
+            return mean
     
     @torch.no_grad()
     def forward(self, x: Tensor) -> list[Tensor]:
@@ -177,14 +226,27 @@ class ContinuousReverseDiffusion(nn.Module):
         imgs: List[Tensor]
             An array containing samples at each step in the reverse process.
         """
-        shape = x.shape
-        img = torch.randn(shape).to(x.device)
-        imgs = []
-        for i in tqdm((range(0, self.num_steps))):
-            img = self.reverse_sample(i, x, img)
-            imgs.append(img.detach().cpu())
-        return imgs
-
+        if self.v and self.w and self.use_guidance:
+            print('Generating guided samples.')
+            v = self.v
+            w = self.w
+            shape = x.shape
+            img = torch.randn(shape).to(x.device)
+            imgs = []
+            for i in tqdm((range(0, self.num_steps))):
+                img = self.reverse_sample_guided(i, x, img, v, w)
+                imgs.append(img.detach().cpu())
+            return imgs
+        else:
+            print('Generating unguided samples.')
+            shape = x.shape
+            img = torch.randn(shape).to(x.device)
+            imgs = []
+            for i in tqdm((range(0, self.num_steps))):
+                img = self.reverse_sample(i, x, img)
+                imgs.append(img.detach().cpu())
+            return imgs
+        
 
 class ContinousDiffusion(nn.Module):
     def __init__(self,
@@ -192,7 +254,11 @@ class ContinousDiffusion(nn.Module):
                  lambda_min: int = -20, 
                  lambda_max: int = 20,
                  num_timesteps: int = 2000,
-                 loss_fn=nn.L1Loss(reduction='mean')
+                 p_uncond: float=0,
+                 loss_fn=nn.L1Loss(reduction='mean'),
+                 use_guidance=True,
+                 *args,
+                 **kwargs
                 ) -> None:
         """Diffusion handler class for the continuous-time DDPM formulation, i.e. conditioning on log(SNR), for a super-resolution problem.
         Assumes a linear profile between min(log(SNR)) and max(log(SNR)).
@@ -208,6 +274,8 @@ class ContinousDiffusion(nn.Module):
             Maximum log(SNR), given a default of 15.
         num_steps: int
             Number of inference steps to discretise the log(SNR) function to. 
+        p_uncond: float
+            Probability of unconditional training.
         loss_fn: nn.L1Loss | nn.MSELoss
             Loss function to use for training. Both L1 and L2 are typical in DDPMs. 
         """
@@ -217,9 +285,32 @@ class ContinousDiffusion(nn.Module):
         self.lambda_max = lambda_max
         self.denoise_model = denoise_model
         self.loss_fn = loss_fn
-        self.forward_process = ContinuousForwardDiffusion(denoise_model=denoise_model, lambda_min=lambda_min, lambda_max=lambda_max)
-        self.reverse_process = ContinuousReverseDiffusion(denoise_model=denoise_model, num_steps=num_timesteps, lambda_min=lambda_min, lambda_max=lambda_max)  
-    
+        self.p_uncond = p_uncond
+
+        if kwargs.get('sampler_noise_interpolation') and kwargs.get('guidance_strength') and use_guidance:
+            self.forward_process = ContinuousForwardDiffusion(denoise_model=denoise_model, lambda_min=lambda_min, lambda_max=lambda_max)
+            self.reverse_process = ContinuousReverseDiffusion(
+                denoise_model=denoise_model, 
+                num_steps=num_timesteps, 
+                lambda_min=lambda_min, 
+                lambda_max=lambda_max,
+                sampler_noise_interpolation=kwargs.get('sampler_noise_interpolation'),
+                guidance_strength=kwargs.get('guidance_strength')
+            )  
+        elif use_guidance:
+            self.forward_process = ContinuousForwardDiffusion(denoise_model=denoise_model, lambda_min=lambda_min, lambda_max=lambda_max)
+            self.reverse_process = ContinuousReverseDiffusion(
+                denoise_model=denoise_model, 
+                num_steps=num_timesteps, 
+                lambda_min=lambda_min, 
+                lambda_max=lambda_max,
+                sampler_noise_interpolation=0.1,
+                guidance_strength=0.1
+            )  
+        else:
+            self.forward_process = ContinuousForwardDiffusion(denoise_model=denoise_model, lambda_min=lambda_min, lambda_max=lambda_max)
+            self.reverse_process = ContinuousReverseDiffusion(denoise_model=denoise_model, num_steps=num_timesteps, lambda_min=lambda_min, lambda_max=lambda_max)  
+            
     @staticmethod
     def _neg_one_to_one(img: Tensor) -> Tensor:
         return (img * 2) - 1.
@@ -229,7 +320,7 @@ class ContinousDiffusion(nn.Module):
         return (img + 1.) * 0.5
     
     def super_resolution(self, x) -> Tensor:
-        if torch.min(x) > 0:
+        if torch.min(x) > -0.1:
             x = self._neg_one_to_one(x)
         x_sr = self.reverse_process(x)
         
@@ -240,7 +331,7 @@ class ContinousDiffusion(nn.Module):
             x = self._neg_one_to_one(x)
             y = self._neg_one_to_one(y)
         
-        _, eps_hat, eps = self.forward_process(x, y)
+        _, eps_hat, eps = self.forward_process(x, y, self.p_uncond)
         
         loss = self.loss_fn(eps, eps_hat)
         
