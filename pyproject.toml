@@ -37,6 +37,9 @@ dependencies = [
   "einops",
   "numpy",
   "matplotlib",
+  "tqdm",
+  "accelerate",
+  "wandb",
   "ml_collections @ git+https://github.com/danielkelshaw/ml_collections",
 ]
 

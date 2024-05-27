@@ -111,7 +111,8 @@ def main(_):
     diffusion = ContinousDiffusion(
         denoise_model=unet,
         lambda_min=config.diffusion.lambda_min,
-        lambda_max=config.diffusion.lambda_max
+        lambda_max=config.diffusion.lambda_max,
+        p_uncond=config.diffusion.p_uncond
     )
 
     optim = torch.optim.Adam(diffusion.denoise_model.parameters(), # type: ignore
@@ -155,7 +156,10 @@ def main(_):
             iters += 1
             
             if iters % FLAGS.saving_frequency == 0:
-                accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_64_128_{iters}.h5')
+                if isinstance(run, Run):
+                    accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_{run.name}_{iters}.h5') # type: ignore
+                else:
+                    accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_64_128_{iters}.h5')
 
     # finish
     if isinstance(run, Run):
