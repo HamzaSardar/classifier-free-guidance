@@ -50,10 +50,18 @@ _SAVE_FREQUENCY = flags.DEFINE_integer(
     'Frequency at which to save model.'
 )
 
+_STANDARDISE = flags.DEFINE_bool(
+    'standardise_data',
+    False,
+    'Whether to standardise individual samples.'
+)
 
 def load_data(pt_path: Path) -> TensorDataset:
 
     ds = torch.load(pt_path)
+    if len(ds.shape) == 4:
+        ds = ds.unsqueeze(2)
+
     ds = TensorDataset(ds[0].clone(), ds[1].clone())
 
     return ds
@@ -80,7 +88,21 @@ def initialise_wandb() -> Run | RunDisabled | None:
 
 def main(_):
 
-    accelerator = Accelerator()
+    torch.backends.cudnn.benchmark = True    
+
+    accelerator = Accelerator(gradient_accumulation_steps=8)
+    #accelerator = Accelerator()
+
+    """
+    @accelerator.on_local_main_process
+    def _save_distributed(accelerator: Accelerator, 
+                          model: ContinousDiffusion, 
+                          wandb_instance: Run, 
+                          iters: int,
+                          results_path=FLAGS.results_path) -> None:
+        
+        accelerator.save(accelerator.unwrap_model(model).denoise_model.state_dict(), Path(results_path) / f'model_{wandb_instance.name}_{iters}.h5')
+    """
 
     FLAGS.results_path.mkdir(parents=True, exist_ok=True)
 
@@ -107,7 +129,9 @@ def main(_):
         dropout=config.network.dropout_rate,
         image_size=tuple(sample.shape[-2:]) # type: ignore
     )
-
+    
+    unet.load_state_dict(torch.load('/mnt/mace01-cfd-home01/mmapzhs5/dedalus_rb/cfg_results/model_silvery-wave-47_115000.h5'))
+    
     diffusion = ContinousDiffusion(
         denoise_model=unet,
         lambda_min=config.diffusion.lambda_min,
@@ -126,26 +150,29 @@ def main(_):
     )
 
     iters = 0
+    standardise = lambda x: ((x - torch.min(torch.abs(x))) / (torch.max(torch.abs(x)) - torch.min(torch.abs(x))))
+
+    standardise_fns = {True: standardise, False: lambda x:x}
+    standardise_fn = standardise_fns[FLAGS.standardise_data]
 
     for epoch in range(n_epochs):
         for idx, zipped_data in enumerate(zip(train_loader, itertools.cycle(val_loader))):
             data, val_data = zipped_data
+            diffusion.train()    
 
             with accelerator.accumulate(diffusion):
-                diffusion.train()    
-                optim.zero_grad()
-
+                optim.zero_grad(set_to_none=True)
                 x, y = data
-                loss = diffusion(x, y)
+                loss = diffusion(standardise_fn(x), standardise_fn(y))
 
-                torch.nn.utils.clip_grad_norm_(diffusion.parameters(), max_norm=0.01)
+                torch.nn.utils.clip_grad_norm_(diffusion.parameters(), max_norm=1.0)
                 accelerator.backward(loss)
                 optim.step()
 
             diffusion.eval()
             with torch.no_grad():
                 x, y = val_data
-                val_loss = diffusion(x, y)
+                val_loss = diffusion(standardise_fn(x), standardise_fn(y))
 
             if iters % FLAGS.logging_frequency == 0:
                 metrics_dict = {'epoch': epoch, 'iter': iters, 'train loss': loss, 'val loss': val_loss}
@@ -157,9 +184,13 @@ def main(_):
             
             if iters % FLAGS.saving_frequency == 0:
                 if isinstance(run, Run):
-                    accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_{run.name}_{iters}.h5') # type: ignore
+                    if accelerator.num_processes > 1:
+                        _save_distributed(accelerator, diffusion, run, iters)
+                    else:
+                        accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_{run.name}_{iters}.h5')
                 else:
-                    accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_64_128_{iters}.h5')
+                    accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_{iters}.h5')
+
 
     # finish
     if isinstance(run, Run):

@@ -327,7 +327,7 @@ class ContinousDiffusion(nn.Module):
         return self._one_to_zero(x_sr[-2])
     
     def forward(self, x: Tensor, y: Tensor) -> Tensor:
-        if torch.min(x) > 0 and torch.min(y) > 0:
+        if torch.min(x) > -0.1 and torch.min(y) > -0.1:
             x = self._neg_one_to_one(x)
             y = self._neg_one_to_one(y)
         
