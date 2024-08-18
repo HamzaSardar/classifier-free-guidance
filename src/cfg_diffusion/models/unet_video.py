@@ -194,7 +194,7 @@ class ResnetBlock(nn.Module):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(time_emb_dim, dim_out * 2)
+            nn.Linear(time_emb_dim, dim_out*2) # NOTE: added *2 on dim_out as the time_emb is chunked in half afterwords
         ) if exists(time_emb_dim) else None
 
         self.block1 = Block(dim, dim_out)
@@ -202,14 +202,13 @@ class ResnetBlock(nn.Module):
         self.res_conv = nn.Conv3d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
     def forward(self, x, time_emb = None):
-
         scale_shift = None
         if exists(self.mlp):
             assert exists(time_emb), 'time emb must be passed in'
             time_emb = self.mlp(time_emb)
             time_emb = rearrange(time_emb, 'b c -> b c 1 1 1')
             scale_shift = time_emb.chunk(2, dim = 1)
-
+            scale, shift = scale_shift
         h = self.block1(x, scale_shift = scale_shift)
 
         h = self.block2(h)
@@ -357,6 +356,7 @@ class UNet(nn.Module):
     ):
         super().__init__()
         self.channels = in_channel
+        self.has_cond = False
 
         # temporal attention and its relative positional encoding
 
@@ -513,3 +513,4 @@ class UNet(nn.Module):
 
         x = torch.cat((x, r), dim = 1)
         return self.final_conv(x)
+
