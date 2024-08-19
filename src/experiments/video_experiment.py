@@ -82,8 +82,8 @@ def main(_):
 
     torch.backends.cudnn.benchmark = True    
 
-    #accelerator = Accelerator(gradient_accumulation_steps=8)
-    accelerator = Accelerator()
+    accelerator = Accelerator(gradient_accumulation_steps=8)
+    #accelerator = Accelerator()
 
     """
     @accelerator.on_local_main_process
@@ -121,7 +121,8 @@ def main(_):
     diffusion = ContinousDiffusion(
         denoise_model=unet,
         lambda_min=config.diffusion.lambda_min,
-        lambda_max=config.diffusion.lambda_max
+        lambda_max=config.diffusion.lambda_max,
+        p_uncond=config.diffusion.p_uncond
     )
 
     optim = torch.optim.Adam(diffusion.denoise_model.parameters(), # type: ignore
