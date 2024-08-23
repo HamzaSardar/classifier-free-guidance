@@ -262,7 +262,7 @@ class Attention(nn.Module):
     def __init__(
         self,
         dim,
-        heads = 4,
+        heads = 8,
         dim_head = 32,
         rotary_emb = None
     ):

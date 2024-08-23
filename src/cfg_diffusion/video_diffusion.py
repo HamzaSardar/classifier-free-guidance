@@ -89,7 +89,7 @@ class ContinuousForwardDiffusion(nn.Module):
         y_noisy, eps_hat, eps: tuple[Tensor, Tensor, Tensor]
             Noised HR image, predicted noise, and actual noise.
         """
-        if torch.rand(1).item() > p_uncond:
+        if torch.rand(1).item() < p_uncond:
             y_noisy, log_snr_sample, eps = self.noising(y0[:, :, 1:-1])
             eps_hat = self.denoise_model(
                 torch.cat([torch.zeros_like(y0)[:, :, 0].unsqueeze(2), y_noisy, torch.zeros_like(y0)[:, :, -1].unsqueeze(2)], dim=2), 
@@ -344,7 +344,7 @@ class ContinousDiffusion(nn.Module):
         if torch.min(x) > 0:
             x = self._neg_one_to_one(x)
         
-        _, eps_hat, eps = self.forward_process(x)
+        _, eps_hat, eps = self.forward_process(x, self.p_uncond)
         
         loss = self.loss_fn(eps, eps_hat)
         

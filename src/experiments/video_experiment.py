@@ -82,8 +82,8 @@ def main(_):
 
     torch.backends.cudnn.benchmark = True    
 
-    accelerator = Accelerator(gradient_accumulation_steps=8)
-    #accelerator = Accelerator()
+    #accelerator = Accelerator(gradient_accumulation_steps=8)
+    accelerator = Accelerator()
 
     """
     @accelerator.on_local_main_process
@@ -126,8 +126,7 @@ def main(_):
     )
 
     optim = torch.optim.Adam(diffusion.denoise_model.parameters(), # type: ignore
-                             lr=config.training.learning_rate,
-                             weight_decay=0.0001)
+                             lr=config.training.learning_rate)
 
     n_epochs = config.training.n_iters // (len(train_loader))
 
@@ -140,6 +139,8 @@ def main(_):
 
     standardise_fns = {True: standardise, False: lambda x:x}
     standardise_fn = standardise_fns[FLAGS.standardise_data]
+
+    print(accelerator.device)
 
     for epoch in range(n_epochs):
         for idx, zipped_data in enumerate(zip(train_loader, itertools.cycle(val_loader))):
