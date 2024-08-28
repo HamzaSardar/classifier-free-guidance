@@ -7,6 +7,15 @@ from functools import partial
 from torch.special import expm1
 
 
+import torch
+import torch.nn as nn
+from torch import Tensor
+from tqdm import tqdm
+from typing import Callable
+from functools import partial
+from torch.special import expm1
+
+
 class ContinuousForwardDiffusion(nn.Module):
     def __init__(self, 
                  denoise_model: Callable,
@@ -71,7 +80,7 @@ class ContinuousForwardDiffusion(nn.Module):
 
         return x_noisy, log_snr_sample, noise
 
-    def forward(self, y0: Tensor, p_uncond: float) -> tuple[Tensor, Tensor, Tensor]:
+    def forward(self, y0: Tensor, p_uncond: float, n_cond_frames=2) -> tuple[Tensor, Tensor, Tensor]:
         """
         Compute the forward pass of a diffusion model.
 
@@ -89,21 +98,27 @@ class ContinuousForwardDiffusion(nn.Module):
         y_noisy, eps_hat, eps: tuple[Tensor, Tensor, Tensor]
             Noised HR image, predicted noise, and actual noise.
         """
+        cond_ind = [1 if i in [round(j * (int(y0.shape[2]) - 1) / (n_cond_frames - 1)) for j in range(n_cond_frames)] else 0 for i in range(int(y0.shape[2]))]
+        mask = torch.cat((
+            [torch.ones_like(y0[:, :, i], device=y0.device).unsqueeze(2) if i==1 else torch.zeros_like(y0[:, :, i], device=y0.device).unsqueeze(2) for i in cond_ind]), 
+            dim=2
+        )
+        y0_masked = y0 * mask
         if torch.rand(1).item() < p_uncond:
-            y_noisy, log_snr_sample, eps = self.noising(y0[:, :, 1:-1])
+            y_noisy, log_snr_sample, eps = self.noising(y0)
             eps_hat = self.denoise_model(
-                torch.cat([torch.zeros_like(y0)[:, :, 0].unsqueeze(2), y_noisy, torch.zeros_like(y0)[:, :, -1].unsqueeze(2)], dim=2), 
+                torch.cat((torch.zeros_like(y0, device=y0.device), y_noisy), dim=1), 
                 log_snr_sample.view(-1)
             )
         else:
-            y_noisy, log_snr_sample, eps = self.noising(y0[:, :, 1:-1])
+            y_noisy, log_snr_sample, eps = self.noising(y0)
             eps_hat = self.denoise_model(
-                torch.cat([y0[:, :, 0].unsqueeze(2), y_noisy, y0[:, :, -1].unsqueeze(2)], dim=2), 
+                torch.cat((y0_masked, y_noisy), dim=1), 
                 log_snr_sample.view(-1)
             )
         
-        return y_noisy, eps_hat[:, :, 1:-1], eps
-        
+        return y_noisy, eps_hat, eps
+
 
 class ContinuousReverseDiffusion(nn.Module):
     def __init__(self, 
@@ -112,6 +127,7 @@ class ContinuousReverseDiffusion(nn.Module):
                  lambda_min: int=-10, 
                  lambda_max: int=15,
                  use_guidance: bool=True,
+                 n_cond_frames: int=2,
                  *args,
                  **kwargs
              ) -> None:
@@ -137,6 +153,7 @@ class ContinuousReverseDiffusion(nn.Module):
         self.denoise_model = denoise_model
         self.num_steps = num_steps
         self.use_guidance=use_guidance
+        self.n_cond_frames = n_cond_frames
         
         # _next variables needed for mean and variance computation
         self.lambdas = torch.linspace(lambda_min, lambda_max, num_steps)
@@ -145,6 +162,7 @@ class ContinuousReverseDiffusion(nn.Module):
         self.alphas_next = torch.cat((self.alphas[1:], torch.tensor([0], device=self.lambdas.device)), dim=0)
         self.sigmas = 1 - self.alphas ** 2
         self.sigmas_next = torch.cat((self.sigmas[1:], torch.tensor([1], device=self.lambdas.device)), dim=0)
+
         v = kwargs.get('sampler_noise_interpolation')
         w = kwargs.get('guidance_strength')
 
@@ -155,17 +173,14 @@ class ContinuousReverseDiffusion(nn.Module):
             self.v = None
             self.w = None
 
-
     @staticmethod
     def _predict_y0(y_noisy: Tensor, sigma_lambda: Tensor, alpha_lambda: Tensor, eps_hat: Tensor) -> Tensor:
         pred_y0 = (y_noisy - sigma_lambda*eps_hat)/alpha_lambda
         return pred_y0
     
     def reverse_mean_variance(self, t: int, y0: Tensor, y_lambda: Tensor) -> tuple[Tensor, Tensor]:
-        y_aug = torch.cat([y0[:, :, 0].unsqueeze(2), y_lambda, y0[:, :, -1].unsqueeze(2)], dim=2)
         
-        eps_hat = self.denoise_model(y_aug, self.lambdas[t].view(-1).to(y_lambda.device))
-        eps_hat = eps_hat[:, :, 1:-1]
+        eps_hat = self.denoise_model(torch.cat((y0, y_lambda), dim=1), self.lambdas[t].view(-1).to(y_lambda.device))
         
         y_hat0 = self._predict_y0(y_lambda, self.sigmas[t].sqrt(), self.alphas[t], eps_hat).clamp_(-1, 1)
         # Eq. 3 from classifier-free guidance paper
@@ -182,26 +197,16 @@ class ContinuousReverseDiffusion(nn.Module):
         noise = torch.randn_like(y_lambda)
         if t != self.num_steps - 1:
             vid =  mean + noise*variance.sqrt()
-            vid = torch.cat([y0[:, :, 0].unsqueeze(2), vid, y0[:, :, -1].unsqueeze(2)], dim=2)
             return vid
         else:
-            return torch.cat([y0[:, :, 0].unsqueeze(2), mean, y0[:, :, -1].unsqueeze(2)], dim=2)
+            return mean
 
     def reverse_mean_variance_guided(self, t: int, y0: Tensor, y_lambda: Tensor, v: float, w: float) -> tuple[Tensor, Tensor]:
-        y_aug = torch.cat([y0[:, :, 0].unsqueeze(2), y_lambda, y0[:, :, -1].unsqueeze(2)], dim=2)
-
-        eps_hat_cond = self.denoise_model(y_aug, self.lambdas[t].view(-1).to(y0.device))
-
-        y_aug_null = torch.cat(
-            [
-                torch.zeros_like(y0, device=y0.device)[:, :, 0].unsqueeze(2), 
-                y_lambda, 
-                torch.zeros_like(y0, device=y0.device)[:, :, -1].unsqueeze(2)
-            ], dim=2
-        )
-        eps_hat_uncond = self.denoise_model(y_aug_null, self.lambdas[t].view(-1).to(y0.device))
         
-        eps_t = (1 + w)*eps_hat_cond[:, :, 1:-1] - w*eps_hat_uncond[:, :, 1:-1]
+        eps_hat_cond = self.denoise_model(torch.cat((y0, y_lambda), dim=1), self.lambdas[t].view(-1).to(y0.device))
+        eps_hat_uncond = self.denoise_model(torch.cat((torch.zeros_like(y0, device=y0.device), y_lambda), dim=1), self.lambdas[t].view(-1).to(y0.device))
+        
+        eps_t = (1 + w)*eps_hat_cond - w*eps_hat_uncond
         
         y_hat0 = self._predict_y0(y_lambda, self.sigmas[t].sqrt(), self.alphas[t], eps_t).clamp_(-1, 1)
         
@@ -220,11 +225,10 @@ class ContinuousReverseDiffusion(nn.Module):
         noise = torch.randn_like(y_lambda)
         if t != self.num_steps - 1:
             vid = mean + noise*variance.sqrt()
-            vid = torch.cat([y0[:, :, 0].unsqueeze(2), vid, y0[:, :, -1].unsqueeze(2)], dim=2)
             return vid
         else:
-            return torch.cat([y0[:, :, 0].unsqueeze(2), mean, y0[:, :, -1].unsqueeze(2)], dim=2)
-
+            return mean
+    
     @torch.no_grad()
     def forward(self, y0: Tensor) -> list[Tensor]:
         """Generate a high-resolution image from a low-resolution input.
@@ -239,7 +243,13 @@ class ContinuousReverseDiffusion(nn.Module):
         imgs: List[Tensor]
             An array containing samples at each step in the reverse process.
         """
-        y0 = torch.cat([y0[:, :, 0].unsqueeze(2), torch.zeros_like(y0, device=y0.device)[:, :, 1:-1], y0[:, :, -1].unsqueeze(2)], dim=2)
+        cond_ind = [1 if i in [round(j * (int(y0.shape[2]) - 1) / (self.n_cond_frames - 1)) for j in range(self.n_cond_frames)] else 0 for i in range(int(y0.shape[2]))]
+        mask = torch.cat((
+            [torch.ones_like(y0[:, :, i], device=y0.device).unsqueeze(2) if i==1 else torch.zeros_like(y0[:, :, i], device=y0.device).unsqueeze(2) for i in cond_ind]), 
+            dim=2
+        )
+        y0_masked = y0 * mask
+        
         if self.v and self.w and self.use_guidance:
             print('Generating guided samples.')
             v = self.v
@@ -248,7 +258,7 @@ class ContinuousReverseDiffusion(nn.Module):
             img = torch.randn(shape).to(y0.device)
             imgs = []
             for i in tqdm((range(0, self.num_steps))):
-                img = self.reverse_sample_guided(i, y0, img[:, :, 1:-1], v, w)
+                img = self.reverse_sample_guided(i, y0_masked, img, v, w)
                 imgs.append(img)
             return imgs[-2].detach().cpu()
         else:
@@ -257,7 +267,7 @@ class ContinuousReverseDiffusion(nn.Module):
             img = torch.randn(shape).to(y0.device)
             imgs = []
             for i in tqdm((range(0, self.num_steps))):
-                img = self.reverse_sample(i, y0, img[:, :, 1:-1])
+                img = self.reverse_sample(i, y0_masked, img)
                 imgs.append(img)
             return imgs[-2].detach().cpu()
 
@@ -265,10 +275,11 @@ class ContinuousReverseDiffusion(nn.Module):
 class ContinousDiffusion(nn.Module):
     def __init__(self,
                  denoise_model: Callable,
-                 lambda_min: int = -20, 
+                 lambda_min: int = -20,
                  lambda_max: int = 20,
                  num_timesteps: int = 2000,
                  p_uncond: float=0,
+                 n_cond_frames: int=2,
                  loss_fn=nn.L1Loss(reduction='mean'),
                  use_guidance=True,
                  *args,
@@ -281,72 +292,76 @@ class ContinousDiffusion(nn.Module):
         Parameters:
         -----------
         denoise_model: Callable
-            Denoising UNet. 
+            Denoising UNet.
         lambda_min: int
             Minimum log(SNR), given a default of -10.
         lambda_max: int
             Maximum log(SNR), given a default of 15.
         num_steps: int
-            Number of inference steps to discretise the log(SNR) function to. 
+            Number of inference steps to discretise the log(SNR) function to.
         p_uncond: float
             Probability of unconditional training.
+        n_cond_frames: int
+            Number of input frames to use for conditioning. Defaults to first and last.
         loss_fn: nn.L1Loss | nn.MSELoss
-            Loss function to use for training. Both L1 and L2 are typical in DDPMs. 
+            Loss function to use for training. Both L1 and L2 are typical in DDPMs.
         """
-        
+
         super().__init__()
         self.lambda_min = lambda_min
         self.lambda_max = lambda_max
         self.denoise_model = denoise_model
         self.loss_fn = loss_fn
         self.p_uncond = p_uncond
+        self.n_cond_frames = n_cond_frames
 
         if kwargs.get('sampler_noise_interpolation') and kwargs.get('guidance_strength') and use_guidance:
             self.forward_process = ContinuousForwardDiffusion(denoise_model=denoise_model, lambda_min=lambda_min, lambda_max=lambda_max)
             self.reverse_process = ContinuousReverseDiffusion(
-                denoise_model=denoise_model, 
-                num_steps=num_timesteps, 
-                lambda_min=lambda_min, 
+                denoise_model=denoise_model,
+                num_steps=num_timesteps,
+                lambda_min=lambda_min,
                 lambda_max=lambda_max,
+                n_cond_frames=n_cond_frames,
                 sampler_noise_interpolation=kwargs.get('sampler_noise_interpolation'),
                 guidance_strength=kwargs.get('guidance_strength')
-            )  
+            )
         elif use_guidance:
             self.forward_process = ContinuousForwardDiffusion(denoise_model=denoise_model, lambda_min=lambda_min, lambda_max=lambda_max)
             self.reverse_process = ContinuousReverseDiffusion(
-                denoise_model=denoise_model, 
-                num_steps=num_timesteps, 
-                lambda_min=lambda_min, 
+                denoise_model=denoise_model,
+                num_steps=num_timesteps,
+                lambda_min=lambda_min,
                 lambda_max=lambda_max,
+                n_cond_frames=n_cond_frames,
                 sampler_noise_interpolation=0.1,
                 guidance_strength=0.1
-            )  
+            )
         else:
             self.forward_process = ContinuousForwardDiffusion(denoise_model=denoise_model, lambda_min=lambda_min, lambda_max=lambda_max)
-            self.reverse_process = ContinuousReverseDiffusion(denoise_model=denoise_model, num_steps=num_timesteps, lambda_min=lambda_min, lambda_max=lambda_max)  
+            self.reverse_process = ContinuousReverseDiffusion(denoise_model=denoise_model, num_steps=num_timesteps, lambda_min=lambda_min, lambda_max=lambda_max, n_cond_frames=n_cond_frames)
 
     @staticmethod
     def _neg_one_to_one(img: Tensor) -> Tensor:
         return (img * 2) - 1.
-    
+
     @staticmethod
     def _one_to_zero(img: Tensor) -> Tensor:
         return (img + 1.) * 0.5
-    
+
     def super_resolution(self, x) -> Tensor:
         if torch.min(x) > -0.1:
             x = self._neg_one_to_one(x)
         x_sr = self.reverse_process(x)
-        
+
         return x_sr
-    
+
     def forward(self, x: Tensor) -> Tensor:
         if torch.min(x) > 0:
             x = self._neg_one_to_one(x)
-        
-        _, eps_hat, eps = self.forward_process(x, self.p_uncond)
-        
-        loss = self.loss_fn(eps, eps_hat)
-        
-        return loss
 
+        _, eps_hat, eps = self.forward_process(x, self.p_uncond, self.n_cond_frames)
+
+        loss = self.loss_fn(eps, eps_hat)
+
+        return loss

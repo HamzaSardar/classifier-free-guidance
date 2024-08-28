@@ -103,7 +103,7 @@ def main(_):
     run = initialise_wandb()
     
     print(config)
-    train_ds, val_ds = load_data(FLAGS.data_path, split_index=800)
+    train_ds, val_ds = load_data(FLAGS.data_path)
     
     train_loader = get_dataloader(train_ds, config.training.batch_size)
     val_loader = get_dataloader(val_ds, config.training.batch_size)
@@ -114,7 +114,7 @@ def main(_):
 
     unet = UNet(
         in_channel=config.network.in_channels,
-        out_channel=config.network.in_channels,
+        out_channel=config.network.in_channels // 2,
         inner_channel=config.network.inner_channels,
     )
     
@@ -122,7 +122,8 @@ def main(_):
         denoise_model=unet,
         lambda_min=config.diffusion.lambda_min,
         lambda_max=config.diffusion.lambda_max,
-        p_uncond=config.diffusion.p_uncond
+        p_uncond=config.diffusion.p_uncond,
+        n_cond_frames=config.diffusion.n_cond_frames
     )
 
     optim = torch.optim.Adam(diffusion.denoise_model.parameters(), # type: ignore
