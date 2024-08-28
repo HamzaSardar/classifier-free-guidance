@@ -50,17 +50,17 @@ _STANDARDISE = flags.DEFINE_bool(
     'Whether to standardise individual samples.'
 )
 
-def load_data(pt_path: Path) -> TensorDataset:
+def load_data(pt_path: Path, split_index: int=2000) -> TensorDataset:
 
     ds = torch.load(pt_path)
-    train_ds = TensorDataset(ds[:2000])
-    val_ds = TensorDataset(ds[2000:])
+    train_ds = TensorDataset(ds[:split_index])
+    val_ds = TensorDataset(ds[split_index:])
 
     return train_ds, val_ds
 
 
 def get_dataloader(ds: TensorDataset, batch_size: int) -> DataLoader:
-    dl = DataLoader(ds,batch_size=batch_size, pin_memory=True, num_workers=8)
+    dl = DataLoader(ds,batch_size=batch_size, pin_memory=True, num_workers=8, shuffle=True)
     return dl
 
 
@@ -103,7 +103,7 @@ def main(_):
     run = initialise_wandb()
     
     print(config)
-    train_ds, val_ds = load_data(FLAGS.data_path)
+    train_ds, val_ds = load_data(FLAGS.data_path, split_index=800)
     
     train_loader = get_dataloader(train_ds, config.training.batch_size)
     val_loader = get_dataloader(val_ds, config.training.batch_size)
