@@ -10,6 +10,8 @@ def get_config() -> ml_collections.ConfigDict:
     config.network = ml_collections.ConfigDict()
     config.network.in_channels = 1
     config.network.inner_channels = 32
+    config.network.norm_groups = 16
+    config.network.dropout_rate = 0.0
 
     # diffusion parameters 
     config.diffusion = ml_collections.ConfigDict()

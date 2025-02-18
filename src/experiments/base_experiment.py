@@ -90,8 +90,8 @@ def main(_):
 
     torch.backends.cudnn.benchmark = True    
 
-    accelerator = Accelerator(gradient_accumulation_steps=8)
-    #accelerator = Accelerator()
+    #accelerator = Accelerator(gradient_accumulation_steps=8)
+    accelerator = Accelerator()
 
     """
     @accelerator.on_local_main_process
@@ -130,7 +130,7 @@ def main(_):
         image_size=tuple(sample.shape[-2:]) # type: ignore
     )
     
-    unet.load_state_dict(torch.load('/mnt/mace01-cfd-home01/mmapzhs5/dedalus_rb/cfg_results/model_silvery-wave-47_115000.h5'))
+    #unet.load_state_dict(torch.load('/mnt/mace01-cfd-home01/mmapzhs5/dedalus_rb/cfg_results/model_silvery-wave-47_115000.h5'))
     
     diffusion = ContinousDiffusion(
         denoise_model=unet,

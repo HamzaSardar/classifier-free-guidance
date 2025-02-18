@@ -8,7 +8,7 @@ import wandb # type: ignore
 from wandb.sdk.lib.disabled import RunDisabled # type: ignore
 from wandb.sdk.wandb_run import Run # type: ignore
 from src.cfg_diffusion.video_diffusion import ContinousDiffusion
-from src.cfg_diffusion.models.unet_video import UNet
+from src.cfg_diffusion.models.unet_video_enhanced import UNet
 import src.cfg_diffusion.utils.flags as cfg_flags
 from ml_collections import config_flags
 
@@ -82,10 +82,9 @@ def main(_):
 
     torch.backends.cudnn.benchmark = True    
 
-    #accelerator = Accelerator(gradient_accumulation_steps=8)
-    accelerator = Accelerator()
+    accelerator = Accelerator(gradient_accumulation_steps=4)
+    #accelerator = Accelerator()
 
-    """
     @accelerator.on_local_main_process
     def _save_distributed(accelerator: Accelerator, 
                           model: ContinousDiffusion, 
@@ -94,7 +93,6 @@ def main(_):
                           results_path=FLAGS.results_path) -> None:
         
         accelerator.save(accelerator.unwrap_model(model).denoise_model.state_dict(), Path(results_path) / f'model_{wandb_instance.name}_{iters}.h5')
-    """
 
     FLAGS.results_path.mkdir(parents=True, exist_ok=True)
 
@@ -103,7 +101,7 @@ def main(_):
     run = initialise_wandb()
     
     print(config)
-    train_ds, val_ds = load_data(FLAGS.data_path)
+    train_ds, val_ds = load_data(FLAGS.data_path, config.training.split_index)
     
     train_loader = get_dataloader(train_ds, config.training.batch_size)
     val_loader = get_dataloader(val_ds, config.training.batch_size)
@@ -117,6 +115,7 @@ def main(_):
         out_channel=config.network.in_channels // 2,
         inner_channel=config.network.inner_channels,
     )
+    #unet.load_state_dict(torch.load('/mnt/mace01-cfd-home01/mmapzhs5/kol-cfg/video/model_zesty-silence-85_30000.h5'))
     
     diffusion = ContinousDiffusion(
         denoise_model=unet,
