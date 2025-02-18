@@ -8,7 +8,7 @@ import wandb # type: ignore
 from wandb.sdk.lib.disabled import RunDisabled # type: ignore
 from wandb.sdk.wandb_run import Run # type: ignore
 from src.cfg_diffusion.video_diffusion import ContinousDiffusion
-from src.cfg_diffusion.models.unet_video_enhanced import UNet
+from src.cfg_diffusion.models.unet_video_enhanced_cc import UNet
 import src.cfg_diffusion.utils.flags as cfg_flags
 from ml_collections import config_flags
 
@@ -50,6 +50,7 @@ _STANDARDISE = flags.DEFINE_bool(
     'Whether to standardise individual samples.'
 )
 
+"""
 def load_data(pt_path: Path, split_index: int=2000) -> TensorDataset:
 
     ds = torch.load(pt_path)
@@ -61,6 +62,30 @@ def load_data(pt_path: Path, split_index: int=2000) -> TensorDataset:
 
 def get_dataloader(ds: TensorDataset, batch_size: int) -> DataLoader:
     dl = DataLoader(ds,batch_size=batch_size, pin_memory=True, num_workers=8, shuffle=True)
+    return dl
+
+"""
+
+def load_data(pt_path: Path, split_index: int = 2000) -> tuple[TensorDataset, TensorDataset]:
+    ds = torch.load(pt_path)
+
+    # Generate labels based on time evolution
+    num_samples = ds.shape[0]
+    num_per_group = 50  # Each 50 samples belong to a timestep sequence
+    labels = torch.arange(1, num_samples + 1, step=num_per_group).repeat_interleave(num_per_group)
+
+    # Attach labels to dataset
+    dataset = TensorDataset(ds, labels)
+
+    # Split into train and validation
+    train_ds = TensorDataset(ds[:split_index], labels[:split_index])
+    val_ds = TensorDataset(ds[split_index:], labels[split_index:])
+
+    return train_ds, val_ds
+
+
+def get_dataloader(ds: TensorDataset, batch_size: int) -> DataLoader:
+    dl = DataLoader(ds, batch_size=batch_size, pin_memory=True, num_workers=8, shuffle=True)
     return dl
 
 
@@ -114,6 +139,7 @@ def main(_):
         in_channel=config.network.in_channels,
         out_channel=config.network.in_channels // 2,
         inner_channel=config.network.inner_channels,
+        num_timestep_classes=4,
     )
     #unet.load_state_dict(torch.load('/mnt/mace01-cfd-home01/mmapzhs5/kol-cfg/video/model_zesty-silence-85_30000.h5'))
     
@@ -150,7 +176,8 @@ def main(_):
             with accelerator.accumulate(diffusion):
                 optim.zero_grad(set_to_none=True)
                 x = data[0]
-                loss = diffusion(standardise_fn(x))
+                label = data[1]
+                loss = diffusion(standardise_fn(x), label)
 
                 torch.nn.utils.clip_grad_norm_(diffusion.parameters(), max_norm=1.0)
                 accelerator.backward(loss)
@@ -159,7 +186,8 @@ def main(_):
             diffusion.eval()
             with torch.no_grad():
                 x = val_data[0]
-                val_loss = diffusion(standardise_fn(x))
+                label = val_data[1]
+                val_loss = diffusion(standardise_fn(x), label)
 
             if iters % FLAGS.logging_frequency == 0:
                 metrics_dict = {'epoch': epoch, 'iter': iters, 'train loss': loss, 'val loss': val_loss}
@@ -174,9 +202,9 @@ def main(_):
                     if accelerator.num_processes > 1:
                         _save_distributed(accelerator, diffusion, run, iters)
                     else:
-                        accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_{run.name}_{iters}.h5')
+                        accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_{run.name}_{iters}_cc.h5')
                 else:
-                    accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_{iters}.h5')
+                    accelerator.save(accelerator.unwrap_model(diffusion).denoise_model.state_dict(), Path(FLAGS.results_path) / f'model_{iters}_cc.h5')
 
 
     # finish

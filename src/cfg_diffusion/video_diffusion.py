@@ -80,7 +80,7 @@ class ContinuousForwardDiffusion(nn.Module):
 
         return x_noisy, log_snr_sample, noise
 
-    def forward(self, y0: Tensor, p_uncond: float, n_cond_frames=2) -> tuple[Tensor, Tensor, Tensor]:
+    def forward(self, y0: Tensor, p_uncond: float, n_cond_frames=2, label: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """
         Compute the forward pass of a diffusion model.
 
@@ -108,13 +108,15 @@ class ContinuousForwardDiffusion(nn.Module):
             y_noisy, log_snr_sample, eps = self.noising(y0)
             eps_hat = self.denoise_model(
                 torch.cat((torch.zeros_like(y0, device=y0.device), y_noisy), dim=1), 
-                log_snr_sample.view(-1)
+                log_snr_sample.view(-1),
+                label
             )
         else:
             y_noisy, log_snr_sample, eps = self.noising(y0)
             eps_hat = self.denoise_model(
                 torch.cat((y0_masked, y_noisy), dim=1), 
-                log_snr_sample.view(-1)
+                log_snr_sample.view(-1),
+                label
             )
         
         return y_noisy, eps_hat, eps
@@ -356,11 +358,11 @@ class ContinousDiffusion(nn.Module):
 
         return x_sr
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, label: Tensor) -> Tensor:
         if torch.min(x) > 0:
             x = self._neg_one_to_one(x)
 
-        _, eps_hat, eps = self.forward_process(x, self.p_uncond, self.n_cond_frames)
+        _, eps_hat, eps = self.forward_process(x, self.p_uncond, self.n_cond_frames, label)
 
         loss = self.loss_fn(eps, eps_hat)
 
