@@ -8,7 +8,7 @@ def get_config() -> ml_collections.ConfigDict:
 
     # network parameters
     config.network = ml_collections.ConfigDict()
-    config.network.in_channels = 1
+    config.network.in_channels = 3
     config.network.inner_channels = 32
     config.network.norm_groups = 16
     config.network.dropout_rate = 0.0
